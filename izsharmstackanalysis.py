@@ -168,27 +168,25 @@ def AnalyzePUSH(EA, Stack, MinEA, MaxEA, Debug = False):
   # Local functions to backtrack the real register as explained above
   # WARNING: this function will invalidate the current decoded instruction
   def BacktrackReg(Reg, MinEA):
-    for head in reversed(Heads(MinEA, EA)):
+    for head in reversed(list(Heads(MinEA, EA))):
       inslen = ua_ana0(head)
       if inslen == 0:
         continue
-      insn = get_current_instruction()
+      if not idaapi.cmd.ea:
+        continue
+      insn = DecodeInstruction(idaapi.cmd.ea)
       if not insn:
         continue
-      op = get_instruction_operand(insn, 0)
-      if not op:
-        continue
-      if op.type != o_reg or op.reg != Reg:
+      if insn.Op1.type != o_reg or insn.Op1.reg != Reg:
         continue
       # if we reach this point it means we identified a
       # MOV OurRegisterOfInterest, ...
-      op = get_instruction_operand(insn, 1)
       # Then we apply our naive heuristic:
       # only accept MOV Regx, Regy with Regy > R7
-      if not op or op.type != o_reg or op.reg <= 7:
+      if insn.Op2.type != o_reg or insn.Op2.reg <= 7:
         continue
       # Yeah we found something interesting ^^
-      return op.reg
+      return insn.Op2.reg
     return Reg
   def BacktrackReglist(Reglist, MinEA):
     return map(lambda reg: BacktrackReg(reg, MinEA), Reglist)
@@ -196,19 +194,18 @@ def AnalyzePUSH(EA, Stack, MinEA, MaxEA, Debug = False):
   inslen = ua_ana0(EA)
   if inslen == 0:
     return None
-  insn = get_current_instruction()
+  if not idaapi.cmd.ea:
+    return None
+  insn = DecodeInstruction(idaapi.cmd.ea)
   if not insn:
     return None
-  op = get_instruction_operand(insn, 0)
-  if not op:
-    return None
-  if op.type == o_reg:
-    real_reg = BacktrackReg(op.reg, MinEA)
+  if insn.Op1.type == o_reg:
+    real_reg = BacktrackReg(insn.Op1.reg, MinEA)
     # Warning: the current decoded instruction has been invalidated
     if Debug: print "  0x%x: PUSH %s" % (EA, Reg2StrDict[real_reg])
     Stack.append((-4, Reg2Str(real_reg), EA))
-  elif op.type == o_idpspec1:
-    reg_list = BacktrackReglist(Bitfield2Reglist(op.specval), MinEA)
+  elif insn.Op1.type == o_idpspec1:
+    reg_list = BacktrackReglist(Bitfield2Reglist(insn.Op1.specval), MinEA)
     # Warning: the current decoded instruction has been invalidated
     if Debug: print "  0x%x: PUSH %s" % (EA, Reglist2Str(reg_list))
     for reg in reversed(reg_list):
@@ -231,19 +228,18 @@ def AnalyzePOP(EA, Stack, MinEA, MaxEA, Debug = False):
   inslen = idaapi.ua_ana0(EA)
   if inslen == 0:
     return None
-  insn = get_current_instruction()
+  if not idaapi.cmd.ea:
+    return None
+  insn = DecodeInstruction(idaapi.cmd.ea)
   if not insn:
     return None
-  op = get_instruction_operand(insn, 0)
-  if not op:
-    return None
-  if op.type == o_reg:
-    if Debug: print "  0x%x: POP %s" % (EA, Reg2StrDict[op.reg])
+  if insn.Op1.type == o_reg:
+    if Debug: print "  0x%x: POP %s" % (EA, Reg2StrDict[insn.Op1.reg])
     info = Stack.pop()
     # Sanity check, verify we are indeed poping a register
     assert(info[0] == -4)
-  elif op.type == o_idpspec1:
-    reg_list = Bitfield2Reglist(op.specval)
+  elif insn.Op1.type == o_idpspec1:
+    reg_list = Bitfield2Reglist(insn.Op1.specval)
     if Debug: print "  0x%x: POP %s" % (EA, Reglist2Str(reg_list))
     for reg in reg_list:
       info = Stack.pop()
@@ -286,17 +282,15 @@ def AnalyzeLDR(EA, Stack, MinEA, MaxEA, Debug = False):
   inslen = idaapi.ua_ana0(EA)
   if inslen == 0:
     return None
-  insn = get_current_instruction()
+  if not idaapi.cmd.ea:
+    return None
+  insn = DecodeInstruction(idaapi.cmd.ea)
   if not insn:
     return None
-  op = get_instruction_operand(insn, 1)
-  if not op:
+  op = insn.Op3 if insn.Op2.type == o_reg else insn.Op2
+  if op.type == o_void:
     return None
-  if op.type == o_reg:
-    op = get_instruction_operand(insn, 2)
-  if not op:
-    return None
-  if op.type == o_mem:
+  elif op.type == o_mem:
     value = get_32bit(op.addr)
     if Debug: print "  0x%x: LDR SP, =0x%x" % (EA, value)
     return value
@@ -322,15 +316,13 @@ def AnalyzeADD(EA, Stack, MinEA, MaxEA, Debug = False):
   inslen = idaapi.ua_ana0(EA)
   if inslen == 0:
     return None
-  insn = get_current_instruction()
+  if not idaapi.cmd.ea:
+    return None
+  insn = DecodeInstruction(idaapi.cmd.ea)
   if not insn:
     return None
-  op = get_instruction_operand(insn, 1)
-  if not op:
-    return None
-  if op.type == o_reg:
-    op = get_instruction_operand(insn, 2)
-  if not op:
+  op = insn.Op3 if insn.Op2.type == o_reg else insn.Op2
+  if op.type == o_void:
     return None
   if op.type == o_imm:
     if Debug: print "  0x%x: ADD SP, SP, #0x%x" % (EA, op.value)
@@ -359,15 +351,13 @@ def AnalyzeSUB(EA, Stack, MinEA, MaxEA, Debug = False):
   inslen = idaapi.ua_ana0(EA)
   if inslen == 0:
     return None
-  insn = get_current_instruction()
+  if not idaapi.cmd.ea:
+    return None
+  insn = DecodeInstruction(idaapi.cmd.ea)
   if not insn:
     return None
-  op = get_instruction_operand(insn, 1)
-  if not op:
-    return None
-  if op.type == o_reg:
-    op = get_instruction_operand(insn, 2)
-  if not op:
+  op = insn.Op3 if insn.Op2.type == o_reg else insn.Op2
+  if op.type == o_void:
     return None
   if op.type == o_imm:
     if Debug: print "  0x%x: SUB SP, SP, #0x%x" % (EA, op.value)
